@@ -2,12 +2,14 @@
 
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  pointerWithin,
+  rectIntersection,
   DndContext,
   DragOverlay,
   PointerSensor,
   useSensor,
   useSensors,
-  closestCorners,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -39,6 +41,13 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
   );
 
   const cardsById = useMemo(() => board.cards, [board.cards]);
+  const collisionDetectionStrategy: CollisionDetection = (args) => {
+    const pointerCollisions = pointerWithin(args);
+    if (pointerCollisions.length > 0) {
+      return pointerCollisions;
+    }
+    return rectIntersection(args);
+  };
 
   useEffect(() => {
     let isActive = true;
@@ -239,7 +248,7 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
         <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCorners}
+            collisionDetection={collisionDetectionStrategy}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
