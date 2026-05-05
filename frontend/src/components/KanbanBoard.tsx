@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -14,10 +14,23 @@ import {
 import { KanbanColumn } from "@/components/KanbanColumn";
 import { KanbanCardPreview } from "@/components/KanbanCardPreview";
 import { createId, initialData, moveCard, type BoardData } from "@/lib/kanban";
+import { aiBoardChat, fetchBoard, saveBoard, type ChatMessage } from "@/lib/api";
 
-export const KanbanBoard = () => {
+type KanbanBoardProps = {
+  username: string;
+  onLogout?: () => void;
+};
+
+export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
   const [board, setBoard] = useState<BoardData>(() => initialData);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [chatInput, setChatInput] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatError, setChatError] = useState("");
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const hasLoadedRef = useRef(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -26,6 +39,52 @@ export const KanbanBoard = () => {
   );
 
   const cardsById = useMemo(() => board.cards, [board.cards]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    const loadBoard = async () => {
+      setIsLoading(true);
+      setError("");
+      try {
+        const loadedBoard = await fetchBoard(username);
+        if (isActive) {
+          setBoard(loadedBoard);
+          hasLoadedRef.current = true;
+        }
+      } catch {
+        if (isActive) {
+          setError("Failed to load board");
+        }
+      } finally {
+        if (isActive) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadBoard();
+
+    return () => {
+      isActive = false;
+    };
+  }, [username]);
+
+  useEffect(() => {
+    if (!hasLoadedRef.current) {
+      return;
+    }
+
+    const persist = async () => {
+      try {
+        await saveBoard(username, board);
+      } catch {
+        setError("Failed to save board");
+      }
+    };
+
+    persist();
+  }, [board, username]);
 
   const handleDragStart = (event: DragStartEvent) => {
     setActiveCardId(event.active.id as string);
@@ -89,7 +148,41 @@ export const KanbanBoard = () => {
     });
   };
 
+  const handleChatSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const trimmed = chatInput.trim();
+    if (!trimmed || isChatLoading) {
+      return;
+    }
+
+    const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: trimmed }];
+    setChatMessages(nextHistory);
+    setChatInput("");
+    setChatError("");
+    setIsChatLoading(true);
+
+    try {
+      const response = await aiBoardChat(username, trimmed, chatMessages);
+      setChatMessages((prev) => [...prev, { role: "assistant", content: response.reply }]);
+      if (response.board_updated) {
+        setBoard(response.board);
+      }
+    } catch {
+      setChatError("AI chat failed");
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
+
   const activeCard = activeCardId ? cardsById[activeCardId] : null;
+
+  if (isLoading) {
+    return (
+      <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6">
+        <p className="text-sm text-[var(--gray-text)]">Loading board...</p>
+      </main>
+    );
+  }
 
   return (
     <div className="relative overflow-hidden">
@@ -118,6 +211,15 @@ export const KanbanBoard = () => {
               <p className="mt-2 text-lg font-semibold text-[var(--primary-blue)]">
                 One board. Five columns. Zero clutter.
               </p>
+              {onLogout ? (
+                <button
+                  type="button"
+                  onClick={onLogout}
+                  className="mt-4 rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white"
+                >
+                  Log out
+                </button>
+              ) : null}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-4">
@@ -131,34 +233,84 @@ export const KanbanBoard = () => {
               </div>
             ))}
           </div>
+          {error ? <p className="text-sm text-red-600">{error}</p> : null}
         </header>
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCorners}
-          onDragStart={handleDragStart}
-          onDragEnd={handleDragEnd}
-        >
-          <section className="grid gap-6 lg:grid-cols-5">
-            {board.columns.map((column) => (
-              <KanbanColumn
-                key={column.id}
-                column={column}
-                cards={column.cardIds.map((cardId) => board.cards[cardId])}
-                onRename={handleRenameColumn}
-                onAddCard={handleAddCard}
-                onDeleteCard={handleDeleteCard}
+        <div className="grid gap-6 xl:grid-cols-[1fr_340px]">
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCorners}
+            onDragStart={handleDragStart}
+            onDragEnd={handleDragEnd}
+          >
+            <section className="grid gap-6 lg:grid-cols-5">
+              {board.columns.map((column) => (
+                <KanbanColumn
+                  key={column.id}
+                  column={column}
+                  cards={column.cardIds.map((cardId) => board.cards[cardId])}
+                  onRename={handleRenameColumn}
+                  onAddCard={handleAddCard}
+                  onDeleteCard={handleDeleteCard}
+                />
+              ))}
+            </section>
+            <DragOverlay>
+              {activeCard ? (
+                <div className="w-[260px]">
+                  <KanbanCardPreview card={activeCard} />
+                </div>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+
+          <aside className="flex min-h-[520px] flex-col rounded-[24px] border border-[var(--stroke)] bg-white/90 p-4 shadow-[var(--shadow)]">
+            <h2 className="text-lg font-semibold text-[var(--navy-dark)]">AI Assistant</h2>
+            <p className="mt-1 text-sm text-[var(--gray-text)]">
+              Ask me to create, edit, or move cards.
+            </p>
+
+            <div className="mt-4 flex-1 space-y-3 overflow-y-auto pr-1">
+              {chatMessages.length === 0 ? (
+                <p className="text-sm text-[var(--gray-text)]">No messages yet.</p>
+              ) : (
+                chatMessages.map((message, index) => (
+                  <div
+                    key={`${message.role}-${index}`}
+                    className={
+                      message.role === "user"
+                        ? "ml-6 rounded-xl bg-[var(--primary-blue)]/10 px-3 py-2 text-sm text-[var(--navy-dark)]"
+                        : "mr-6 rounded-xl bg-[var(--surface)] px-3 py-2 text-sm text-[var(--navy-dark)]"
+                    }
+                  >
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--gray-text)]">
+                      {message.role}
+                    </p>
+                    <p>{message.content}</p>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {chatError ? <p className="mt-3 text-sm text-red-600">{chatError}</p> : null}
+
+            <form onSubmit={handleChatSubmit} className="mt-3 flex gap-2">
+              <input
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                placeholder="Ask AI to update the board..."
+                className="flex-1 rounded-lg border border-[var(--stroke)] px-3 py-2 text-sm"
               />
-            ))}
-          </section>
-          <DragOverlay>
-            {activeCard ? (
-              <div className="w-[260px]">
-                <KanbanCardPreview card={activeCard} />
-              </div>
-            ) : null}
-          </DragOverlay>
-        </DndContext>
+              <button
+                type="submit"
+                disabled={isChatLoading}
+                className="rounded-lg bg-[var(--secondary-purple)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {isChatLoading ? "Sending..." : "Send"}
+              </button>
+            </form>
+          </aside>
+        </div>
       </main>
     </div>
   );

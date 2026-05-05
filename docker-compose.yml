@@ -1,0 +1,10 @@
+services:
+  pm-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pm-mvp-app
+    ports:
+      - "8000:8000"
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
