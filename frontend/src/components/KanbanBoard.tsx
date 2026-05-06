@@ -33,6 +33,7 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
   const [chatError, setChatError] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
   const hasLoadedRef = useRef(false);
+  const skipNextSaveRef = useRef(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -58,8 +59,9 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
       try {
         const loadedBoard = await fetchBoard(username);
         if (isActive) {
-          setBoard(loadedBoard);
           hasLoadedRef.current = true;
+          skipNextSaveRef.current = true;
+          setBoard(loadedBoard);
         }
       } catch {
         if (isActive) {
@@ -81,6 +83,11 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
 
   useEffect(() => {
     if (!hasLoadedRef.current) {
+      return;
+    }
+
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false;
       return;
     }
 

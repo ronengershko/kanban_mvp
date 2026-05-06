@@ -87,6 +87,7 @@ describe("KanbanBoard", () => {
     const input = within(column).getByLabelText("Column title");
     await userEvent.clear(input);
     await userEvent.type(input, "Saved Name");
+    input.blur();
 
     expect(global.fetch).toHaveBeenCalledWith("/api/board/user", expect.objectContaining({
       method: "PUT",

@@ -21,14 +21,16 @@ Windows: use `scripts/start.ps1` / `start.bat` equivalents.
 
 The backend is Python/FastAPI (`backend/app/main.py`). Everything lives in that single file.
 
-Run tests (from project root, requires uv installed):
+Run tests (requires uv installed):
 ```bash
-cd backend && python -m pytest tests/
+cd backend && uv run --group dev pytest tests/
 # single test file:
-cd backend && python -m pytest tests/test_board_api.py
+cd backend && uv run --group dev pytest tests/test_board_api.py
 ```
 
 The backend also runs the frontend static build. It checks `/app/frontend-out` (Docker path) first, then falls back to `frontend/out` (local path). Build frontend first if running backend locally outside Docker.
+
+E2E tests (`npm run test:e2e`) require the Docker server to be running first — Playwright points at `http://localhost:8000`. For local dev, `next dev` proxies `/api/*` to `http://localhost:8000` automatically.
 
 ## Frontend Development
 

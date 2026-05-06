@@ -3,6 +3,7 @@ import os
 import sqlite3
 import urllib.error
 import urllib.request
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,14 @@ from pydantic import BaseModel, ValidationError
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-app = FastAPI(title="pm-backend")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="pm-backend", lifespan=lifespan)
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -282,25 +290,19 @@ def ai_board_chat(request: AiBoardChatRequest) -> dict[str, Any]:
         board = get_or_create_board(conn, user_id)
         conn.commit()
 
-    history_text = "\n".join(f"{entry.role}: {entry.content}" for entry in request.history)
     board_json = json.dumps(board, ensure_ascii=True)
     system_prompt = (
-        "You are a Kanban assistant. Return ONLY JSON with this schema: "
+        "You are a Kanban assistant. The current board JSON is below. "
+        "Return ONLY JSON with this schema: "
         '{"reply":"string","board":null OR {"columns":[{"id":"string","title":"string","cardIds":["string"]}],"cards":{"any-id":{"id":"string","title":"string","details":"string"}}}}. '
-        "Use board=null if no board changes are needed."
+        f"Use board=null if no board changes are needed.\n\nCurrent board JSON:\n{board_json}"
     )
-    user_prompt = (
-        f"Current board JSON:\n{board_json}\n\n"
-        f"Conversation history:\n{history_text if history_text else '(none)'}\n\n"
-        f"User message:\n{request.message}"
-    )
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    for entry in request.history:
+        messages.append({"role": entry.role, "content": entry.content})
+    messages.append({"role": "user", "content": request.message})
 
-    raw_output = call_openrouter_messages(
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ]
-    )
+    raw_output = call_openrouter_messages(messages)
     parsed = extract_json_object(raw_output)
     try:
         structured = AiStructuredOutput.model_validate(parsed)
@@ -312,7 +314,6 @@ def ai_board_chat(request: AiBoardChatRequest) -> dict[str, Any]:
     if structured.board is not None:
         result_board = structured.board.model_dump()
         with get_connection() as conn:
-            user_id = get_or_create_user_id(conn, request.username)
             persist_board(conn, user_id, result_board)
             conn.commit()
 
@@ -323,11 +324,6 @@ def ai_board_chat(request: AiBoardChatRequest) -> dict[str, Any]:
         "board_updated": board_updated,
         "board": result_board,
     }
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
 
 
 @app.get("/api/board/{username}", response_model=BoardData)
