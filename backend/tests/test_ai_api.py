@@ -7,6 +7,7 @@ from backend.app import main
 
 def make_client(tmp_path: Path) -> TestClient:
     main.app.state.db_path = str(tmp_path / "test.sqlite3")
+    main.init_db()
     return TestClient(main.app)
 
 

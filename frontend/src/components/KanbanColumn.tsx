@@ -12,6 +12,8 @@ type KanbanColumnProps = {
   onRename: (columnId: string, title: string) => void;
   onAddCard: (columnId: string, title: string, details: string) => void;
   onDeleteCard: (columnId: string, cardId: string) => void;
+  onDeleteColumn: (columnId: string) => void;
+  onEditCard: (card: Card) => void;
 };
 
 export const KanbanColumn = ({
@@ -20,6 +22,8 @@ export const KanbanColumn = ({
   onRename,
   onAddCard,
   onDeleteCard,
+  onDeleteColumn,
+  onEditCard,
 }: KanbanColumnProps) => {
   const { setNodeRef, isOver } = useDroppable({ id: column.id });
   const [title, setTitle] = useState(column.title);
@@ -37,7 +41,7 @@ export const KanbanColumn = ({
       data-testid={`column-${column.id}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="w-full">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-3">
             <div className="h-2 w-10 rounded-full bg-[var(--accent-yellow)]" />
             <span className="text-xs font-semibold uppercase tracking-[0.2em] text-[var(--gray-text)]">
@@ -52,7 +56,19 @@ export const KanbanColumn = ({
             aria-label="Column title"
           />
         </div>
+        <button
+          type="button"
+          onClick={() => onDeleteColumn(column.id)}
+          className="mt-1 shrink-0 rounded-full p-1.5 text-[var(--gray-text)] opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red-50/20 hover:text-red-400 focus:opacity-100"
+          aria-label={`Delete column ${column.title}`}
+          title="Delete column"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+            <path d="M2 3h8M5 3V2h2v1M4 3v6.5a.5.5 0 00.5.5h3a.5.5 0 00.5-.5V3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
       </div>
+
       <div ref={setNodeRef} className="mt-4 flex flex-1 flex-col gap-3 rounded-2xl">
         <SortableContext items={column.cardIds} strategy={verticalListSortingStrategy}>
           {cards.map((card) => (
@@ -60,6 +76,7 @@ export const KanbanColumn = ({
               key={card.id}
               card={card}
               onDelete={(cardId) => onDeleteCard(column.id, cardId)}
+              onEdit={onEditCard}
             />
           ))}
         </SortableContext>

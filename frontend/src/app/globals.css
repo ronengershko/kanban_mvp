@@ -8,10 +8,24 @@
   --gray-text: #888888;
   --surface: #f7f8fb;
   --surface-strong: #ffffff;
+  --surface-card: #ffffff;
+  --surface-header: rgba(255, 255, 255, 0.88);
   --stroke: rgba(3, 33, 71, 0.08);
   --shadow: 0 18px 40px rgba(3, 33, 71, 0.12);
   --font-display: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
   --font-body: "Avenir", "Calibri", "Segoe UI", sans-serif;
+}
+
+[data-theme="dark"] {
+  --navy-dark: #d8e8f8;
+  --gray-text: #7a90a8;
+  --surface: #0a1829;
+  --surface-strong: #0f2038;
+  --surface-card: #162843;
+  --surface-header: rgba(10, 24, 41, 0.92);
+  --stroke: rgba(255, 255, 255, 0.08);
+  --shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+  --secondary-purple: #9b59c3;
 }
 
 @theme inline {

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -82,10 +83,14 @@ DEFAULT_BOARD: dict[str, Any] = {
 }
 
 
+# ── Pydantic models ────────────────────────────────────────────────────────────
+
 class Card(BaseModel):
     id: str
     title: str
     details: str
+    priority: str | None = None
+    due_date: str | None = None
 
 
 class Column(BaseModel):
@@ -99,6 +104,12 @@ class BoardData(BaseModel):
     cards: dict[str, Card]
 
 
+class BoardMeta(BaseModel):
+    id: int
+    name: str
+    updated_at: str
+
+
 class AiTestRequest(BaseModel):
     prompt: str = "2+2"
 
@@ -110,6 +121,7 @@ class ChatMessage(BaseModel):
 
 class AiBoardChatRequest(BaseModel):
     username: str
+    board_id: int
     message: str
     history: list[ChatMessage] = []
 
@@ -117,6 +129,30 @@ class AiBoardChatRequest(BaseModel):
 class AiStructuredOutput(BaseModel):
     reply: str
     board: BoardData | None = None
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class CreateBoardRequest(BaseModel):
+    name: str = "New Board"
+
+
+class RenameBoardRequest(BaseModel):
+    name: str
+
+
+# ── DB helpers ─────────────────────────────────────────────────────────────────
+
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 def get_db_path() -> Path:
@@ -128,6 +164,7 @@ def get_connection() -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -138,6 +175,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS users (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               username TEXT NOT NULL UNIQUE,
+              password_hash TEXT,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -146,7 +184,8 @@ def init_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS boards (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
-              user_id INTEGER NOT NULL UNIQUE,
+              user_id INTEGER NOT NULL,
+              name TEXT NOT NULL DEFAULT 'My Board',
               board_json TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -155,6 +194,29 @@ def init_db() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_boards_user_id ON boards(user_id)")
+
+        # Migrate: add password_hash column if upgrading from old schema
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "password_hash" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+
+        # Migrate: add name column to boards if upgrading from old schema
+        board_cols = {row[1] for row in conn.execute("PRAGMA table_info(boards)")}
+        if "name" not in board_cols:
+            conn.execute("ALTER TABLE boards ADD COLUMN name TEXT NOT NULL DEFAULT 'My Board'")
+
+        # Seed the legacy single-board users: create a board row if they have none
+        # (handles upgrade from old UNIQUE user_id boards schema)
+        conn.execute(
+            """
+            INSERT INTO boards (user_id, name, board_json)
+            SELECT u.id, 'My Board', ?
+            FROM users u
+            WHERE NOT EXISTS (SELECT 1 FROM boards b WHERE b.user_id = u.id)
+            """,
+            (json.dumps(DEFAULT_BOARD),),
+        )
+
         conn.commit()
 
 
@@ -162,23 +224,57 @@ def get_or_create_user_id(conn: sqlite3.Connection, username: str) -> int:
     row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if row:
         return int(row["id"])
-
     cursor = conn.execute("INSERT INTO users (username) VALUES (?)", (username,))
     return int(cursor.lastrowid)
 
 
-def get_or_create_board(conn: sqlite3.Connection, user_id: int) -> dict[str, Any]:
-    row = conn.execute("SELECT board_json FROM boards WHERE user_id = ?", (user_id,)).fetchone()
+def get_user_id(conn: sqlite3.Connection, username: str) -> int | None:
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    return int(row["id"]) if row else None
+
+
+def require_user(conn: sqlite3.Connection, username: str) -> int:
+    user_id = get_user_id(conn, username)
+    if user_id is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user_id
+
+
+def require_board(conn: sqlite3.Connection, user_id: int, board_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT board_json FROM boards WHERE id = ? AND user_id = ?",
+        (board_id, user_id),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Board not found")
+    return json.loads(str(row["board_json"]))
+
+
+def get_or_create_default_board(conn: sqlite3.Connection, user_id: int) -> tuple[int, dict[str, Any]]:
+    row = conn.execute(
+        "SELECT id, board_json FROM boards WHERE user_id = ? ORDER BY id ASC LIMIT 1",
+        (user_id,),
+    ).fetchone()
     if row:
-        return json.loads(str(row["board_json"]))
-
-    board_json = json.dumps(DEFAULT_BOARD)
-    conn.execute(
-        "INSERT INTO boards (user_id, board_json) VALUES (?, ?)",
-        (user_id, board_json),
+        return int(row["id"]), json.loads(str(row["board_json"]))
+    cursor = conn.execute(
+        "INSERT INTO boards (user_id, name, board_json) VALUES (?, ?, ?)",
+        (user_id, "My Board", json.dumps(DEFAULT_BOARD)),
     )
-    return DEFAULT_BOARD
+    return int(cursor.lastrowid), DEFAULT_BOARD
 
+
+def persist_board(conn: sqlite3.Connection, board_id: int, payload: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        UPDATE boards SET board_json = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (json.dumps(payload), board_id),
+    )
+
+
+# ── OpenRouter ─────────────────────────────────────────────────────────────────
 
 def call_openrouter_messages(messages: list[dict[str, str]]) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -254,18 +350,167 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return parsed
 
 
-def persist_board(conn: sqlite3.Connection, user_id: int, payload: dict[str, Any]) -> None:
-    conn.execute(
-        """
-        INSERT INTO boards (user_id, board_json, updated_at)
-        VALUES (?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id) DO UPDATE SET
-          board_json = excluded.board_json,
-          updated_at = CURRENT_TIMESTAMP
-        """,
-        (user_id, json.dumps(payload)),
-    )
+# ── Auth endpoints ─────────────────────────────────────────────────────────────
 
+@app.post("/api/auth/register")
+def register(request: RegisterRequest) -> dict[str, str]:
+    username = request.username.strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required")
+    if len(request.password) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+
+    password_hash = _hash_password(request.password)
+    with get_connection() as conn:
+        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="Username already taken")
+        conn.execute(
+            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+            (username, password_hash),
+        )
+        conn.commit()
+
+    return {"status": "ok", "username": username}
+
+
+@app.post("/api/auth/login")
+def login(request: LoginRequest) -> dict[str, str]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, password_hash FROM users WHERE username = ?",
+            (request.username,),
+        ).fetchone()
+
+    # Legacy "user" account without password hash — allow login with password "password"
+    if row and row["password_hash"] is None:
+        if request.username == "user" and request.password == "password":
+            return {"status": "ok", "username": request.username}
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not row or row["password_hash"] != _hash_password(request.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    return {"status": "ok", "username": request.username}
+
+
+# ── Board list endpoints ───────────────────────────────────────────────────────
+
+@app.get("/api/boards/{username}", response_model=list[BoardMeta])
+def list_boards(username: str) -> list[BoardMeta]:
+    with get_connection() as conn:
+        user_id = get_or_create_user_id(conn, username)
+        get_or_create_default_board(conn, user_id)
+        conn.commit()
+        rows = conn.execute(
+            "SELECT id, name, updated_at FROM boards WHERE user_id = ? ORDER BY id ASC",
+            (user_id,),
+        ).fetchall()
+    return [BoardMeta(id=row["id"], name=row["name"], updated_at=row["updated_at"]) for row in rows]
+
+
+@app.post("/api/boards/{username}", response_model=BoardMeta)
+def create_board(username: str, request: CreateBoardRequest) -> BoardMeta:
+    name = request.name.strip() or "New Board"
+    with get_connection() as conn:
+        user_id = get_or_create_user_id(conn, username)
+        cursor = conn.execute(
+            "INSERT INTO boards (user_id, name, board_json) VALUES (?, ?, ?)",
+            (user_id, name, json.dumps(DEFAULT_BOARD)),
+        )
+        board_id = int(cursor.lastrowid)
+        conn.commit()
+        row = conn.execute(
+            "SELECT id, name, updated_at FROM boards WHERE id = ?", (board_id,)
+        ).fetchone()
+    return BoardMeta(id=row["id"], name=row["name"], updated_at=row["updated_at"])
+
+
+@app.patch("/api/boards/{username}/{board_id}")
+def rename_board(username: str, board_id: int, request: RenameBoardRequest) -> BoardMeta:
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Board name is required")
+    with get_connection() as conn:
+        user_id = require_user(conn, username)
+        row = conn.execute(
+            "SELECT id FROM boards WHERE id = ? AND user_id = ?", (board_id, user_id)
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Board not found")
+        conn.execute(
+            "UPDATE boards SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (name, board_id),
+        )
+        conn.commit()
+        updated = conn.execute(
+            "SELECT id, name, updated_at FROM boards WHERE id = ?", (board_id,)
+        ).fetchone()
+    return BoardMeta(id=updated["id"], name=updated["name"], updated_at=updated["updated_at"])
+
+
+@app.delete("/api/boards/{username}/{board_id}")
+def delete_board(username: str, board_id: int) -> dict[str, str]:
+    with get_connection() as conn:
+        user_id = require_user(conn, username)
+        row = conn.execute(
+            "SELECT id FROM boards WHERE user_id = ?", (user_id,)
+        ).fetchall()
+        if len(row) <= 1:
+            raise HTTPException(status_code=400, detail="Cannot delete your only board")
+        result = conn.execute(
+            "DELETE FROM boards WHERE id = ? AND user_id = ?", (board_id, user_id)
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Board not found")
+        conn.commit()
+    return {"status": "ok"}
+
+
+# ── Per-board endpoints ────────────────────────────────────────────────────────
+
+@app.get("/api/board/{username}/{board_id}", response_model=BoardData)
+def read_board_by_id(username: str, board_id: int) -> BoardData:
+    with get_connection() as conn:
+        user_id = require_user(conn, username)
+        board = require_board(conn, user_id, board_id)
+    return BoardData.model_validate(board)
+
+
+@app.put("/api/board/{username}/{board_id}", response_model=BoardData)
+def update_board_by_id(username: str, board_id: int, board: BoardData) -> BoardData:
+    payload = board.model_dump()
+    with get_connection() as conn:
+        user_id = require_user(conn, username)
+        require_board(conn, user_id, board_id)
+        persist_board(conn, board_id, payload)
+        conn.commit()
+    return board
+
+
+# ── Legacy single-board endpoints (backward-compat) ───────────────────────────
+
+@app.get("/api/board/{username}", response_model=BoardData)
+def read_board(username: str) -> BoardData:
+    with get_connection() as conn:
+        user_id = get_or_create_user_id(conn, username)
+        _, board = get_or_create_default_board(conn, user_id)
+        conn.commit()
+    return BoardData.model_validate(board)
+
+
+@app.put("/api/board/{username}", response_model=BoardData)
+def update_board(username: str, board: BoardData) -> BoardData:
+    payload = board.model_dump()
+    with get_connection() as conn:
+        user_id = get_or_create_user_id(conn, username)
+        board_id, _ = get_or_create_default_board(conn, user_id)
+        persist_board(conn, board_id, payload)
+        conn.commit()
+    return board
+
+
+# ── AI endpoints ───────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
@@ -287,7 +532,7 @@ def ai_test(request: AiTestRequest) -> dict[str, str]:
 def ai_board_chat(request: AiBoardChatRequest) -> dict[str, Any]:
     with get_connection() as conn:
         user_id = get_or_create_user_id(conn, request.username)
-        board = get_or_create_board(conn, user_id)
+        board = require_board(conn, user_id, request.board_id)
         conn.commit()
 
     board_json = json.dumps(board, ensure_ascii=True)
@@ -310,40 +555,24 @@ def ai_board_chat(request: AiBoardChatRequest) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=f"AI output schema invalid: {exc.errors()}") from exc
 
     board_updated = structured.board is not None
-    result_board = board
     if structured.board is not None:
-        result_board = structured.board.model_dump()
+        result_board_model = structured.board
         with get_connection() as conn:
-            persist_board(conn, user_id, result_board)
+            persist_board(conn, request.board_id, result_board_model.model_dump())
             conn.commit()
+    else:
+        result_board_model = BoardData.model_validate(board)
 
     return {
         "status": "ok",
         "model": OPENROUTER_MODEL,
         "reply": structured.reply,
         "board_updated": board_updated,
-        "board": result_board,
+        "board": result_board_model.model_dump(),
     }
 
 
-@app.get("/api/board/{username}", response_model=BoardData)
-def read_board(username: str) -> BoardData:
-    with get_connection() as conn:
-        user_id = get_or_create_user_id(conn, username)
-        board = get_or_create_board(conn, user_id)
-        conn.commit()
-    return BoardData.model_validate(board)
-
-
-@app.put("/api/board/{username}", response_model=BoardData)
-def update_board(username: str, board: BoardData) -> BoardData:
-    payload = board.model_dump()
-    with get_connection() as conn:
-        user_id = get_or_create_user_id(conn, username)
-        persist_board(conn, user_id, payload)
-        conn.commit()
-    return board
-
+# ── Static frontend ────────────────────────────────────────────────────────────
 
 docker_static_dir = Path("/app/frontend-out")
 local_static_dir = Path(__file__).resolve().parents[2] / "frontend" / "out"

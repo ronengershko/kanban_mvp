@@ -1,42 +1,46 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { vi } from "vitest";
 import { KanbanBoard } from "@/components/KanbanBoard";
 import { initialData } from "@/lib/kanban";
 
+const MOCK_BOARDS = [{ id: 1, name: "My Board", updated_at: "2024-01-01T00:00:00" }];
+
+function makeFetch(aiReply?: { reply: string; board_updated: boolean; board: typeof initialData }) {
+  return vi.fn(async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+
+    if (method === "GET" && url.includes("/api/boards/")) {
+      return { ok: true, json: async () => MOCK_BOARDS } as Response;
+    }
+
+    if (method === "GET" && url.includes("/api/board/")) {
+      return { ok: true, json: async () => JSON.parse(JSON.stringify(initialData)) } as Response;
+    }
+
+    if (method === "POST" && url === "/api/ai/board-chat") {
+      return {
+        ok: true,
+        json: async () => ({
+          status: "ok",
+          model: "openai/gpt-oss-120b",
+          reply: aiReply?.reply ?? "Done.",
+          board_updated: aiReply?.board_updated ?? false,
+          board: aiReply?.board ?? initialData,
+        }),
+      } as Response;
+    }
+
+    return { ok: true, json: async () => JSON.parse(String(init?.body ?? "{}")) } as Response;
+  }) as typeof fetch;
+}
+
 const getFirstColumn = () => screen.getAllByTestId(/column-/i)[0];
 
 describe("KanbanBoard", () => {
   beforeEach(() => {
-    global.fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? "GET";
-
-      if (method === "GET" && url.includes("/api/board/")) {
-        return {
-          ok: true,
-          json: async () => initialData,
-        } as Response;
-      }
-
-      if (method === "POST" && url === "/api/ai/board-chat") {
-        return {
-          ok: true,
-          json: async () => ({
-            status: "ok",
-            model: "openai/gpt-oss-120b",
-            reply: "Done.",
-            board_updated: false,
-            board: initialData,
-          }),
-        } as Response;
-      }
-
-      return {
-        ok: true,
-        json: async () => JSON.parse(String(init.body)),
-      } as Response;
-    }) as typeof fetch;
+    global.fetch = makeFetch();
   });
 
   it("renders five columns", async () => {
@@ -58,9 +62,7 @@ describe("KanbanBoard", () => {
     render(<KanbanBoard username="user" />);
     await screen.findAllByTestId(/column-/i);
     const column = getFirstColumn();
-    const addButton = within(column).getByRole("button", {
-      name: /add a card/i,
-    });
+    const addButton = within(column).getByRole("button", { name: /add a card/i });
     await userEvent.click(addButton);
 
     const titleInput = within(column).getByPlaceholderText(/card title/i);
@@ -72,9 +74,7 @@ describe("KanbanBoard", () => {
 
     expect(within(column).getByText("New card")).toBeInTheDocument();
 
-    const deleteButton = within(column).getByRole("button", {
-      name: /delete new card/i,
-    });
+    const deleteButton = within(column).getByRole("button", { name: /delete new card/i });
     await userEvent.click(deleteButton);
 
     expect(within(column).queryByText("New card")).not.toBeInTheDocument();
@@ -89,9 +89,12 @@ describe("KanbanBoard", () => {
     await userEvent.type(input, "Saved Name");
     input.blur();
 
-    expect(global.fetch).toHaveBeenCalledWith("/api/board/user", expect.objectContaining({
-      method: "PUT",
-    }));
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/board/user/"),
+        expect.objectContaining({ method: "PUT" })
+      );
+    });
   });
 
   it("sends chat prompt and applies AI board update", async () => {
@@ -99,26 +102,7 @@ describe("KanbanBoard", () => {
       ...initialData,
       columns: [{ ...initialData.columns[0], title: "AI Renamed" }, ...initialData.columns.slice(1)],
     };
-    global.fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = init?.method ?? "GET";
-      if (method === "GET" && url.includes("/api/board/")) {
-        return { ok: true, json: async () => initialData } as Response;
-      }
-      if (method === "POST" && url === "/api/ai/board-chat") {
-        return {
-          ok: true,
-          json: async () => ({
-            status: "ok",
-            model: "openai/gpt-oss-120b",
-            reply: "Renamed it.",
-            board_updated: true,
-            board: updatedBoard,
-          }),
-        } as Response;
-      }
-      return { ok: true, json: async () => JSON.parse(String(init?.body ?? "{}")) } as Response;
-    }) as typeof fetch;
+    global.fetch = makeFetch({ reply: "Renamed it.", board_updated: true, board: updatedBoard });
 
     render(<KanbanBoard username="user" />);
     await screen.findAllByTestId(/column-/i);

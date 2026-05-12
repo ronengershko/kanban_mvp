@@ -1,7 +1,11 @@
+export type Priority = "high" | "medium" | "low";
+
 export type Card = {
   id: string;
   title: string;
   details: string;
+  priority?: Priority;
+  due_date?: string;
 };
 
 export type Column = {
@@ -165,4 +169,49 @@ export const createId = (prefix: string) => {
   const randomPart = Math.random().toString(36).slice(2, 8);
   const timePart = Date.now().toString(36);
   return `${prefix}-${randomPart}${timePart}`;
+};
+
+export const addColumn = (
+  board: BoardData,
+  title: string
+): BoardData => {
+  const id = createId("col");
+  return {
+    ...board,
+    columns: [...board.columns, { id, title, cardIds: [] }],
+  };
+};
+
+export const deleteColumn = (board: BoardData, columnId: string): BoardData => {
+  const column = board.columns.find((c) => c.id === columnId);
+  if (!column) return board;
+  const cards = { ...board.cards };
+  for (const cardId of column.cardIds) {
+    delete cards[cardId];
+  }
+  return {
+    columns: board.columns.filter((c) => c.id !== columnId),
+    cards,
+  };
+};
+
+export const updateCard = (board: BoardData, updated: Card): BoardData => ({
+  ...board,
+  cards: { ...board.cards, [updated.id]: updated },
+});
+
+export const isOverdue = (due_date: string): boolean => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return new Date(due_date) < today;
+};
+
+export const isDueToday = (due_date: string): boolean => {
+  const today = new Date();
+  const d = new Date(due_date);
+  return (
+    d.getFullYear() === today.getFullYear() &&
+    d.getMonth() === today.getMonth() &&
+    d.getDate() === today.getDate()
+  );
 };
