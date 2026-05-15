@@ -16,45 +16,51 @@ export const AuthGate = ({ defaultUsername }: AuthGateProps = {}) => {
   const [isLoading, setIsLoading] = useState(false);
   const [authenticatedUsername, setAuthenticatedUsername] = useState("");
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  const isLogin = mode === "login";
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setIsLoading(true);
-
     try {
-      if (mode === "login") {
-        await loginUser(username, password);
-      } else {
-        await registerUser(username, password);
-        await loginUser(username, password);
-      }
+      if (!isLogin) await registerUser(username, password);
+      await loginUser(username, password);
       setAuthenticatedUsername(username);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setIsLoading(false);
     }
-  };
+  }
 
-  const handleLogout = () => {
+  function handleLogout() {
     setAuthenticatedUsername("");
     setUsername("");
     setPassword("");
     setError("");
-  };
+  }
+
+  function switchMode(next: "login" | "register") {
+    setMode(next);
+    setError("");
+  }
 
   if (authenticatedUsername) {
     return <KanbanBoard username={authenticatedUsername} onLogout={handleLogout} />;
   }
 
+  const submitLabel = isLoading
+    ? (isLogin ? "Signing in..." : "Creating account...")
+    : (isLogin ? "Sign in" : "Create account");
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-md items-center px-6">
       <section className="w-full rounded-2xl border border-[var(--stroke)] bg-[var(--surface-card)] p-8 shadow-[var(--shadow)]">
         <h1 className="text-3xl font-semibold text-[var(--navy-dark)]">
-          {mode === "login" ? "Sign in" : "Create account"}
+          {isLogin ? "Sign in" : "Create account"}
         </h1>
         <p className="mt-2 text-sm text-[var(--gray-text)]">
-          {mode === "login"
+          {isLogin
             ? "Sign in to access your Kanban boards."
             : "Pick a username and password to get started."}
         </p>
@@ -100,23 +106,17 @@ export const AuthGate = ({ defaultUsername }: AuthGateProps = {}) => {
             disabled={isLoading}
             className="w-full rounded-lg bg-[var(--secondary-purple)] px-4 py-2 font-semibold text-white disabled:opacity-60"
           >
-            {isLoading
-              ? mode === "login"
-                ? "Signing in..."
-                : "Creating account..."
-              : mode === "login"
-                ? "Sign in"
-                : "Create account"}
+            {submitLabel}
           </button>
         </form>
 
         <p className="mt-5 text-center text-sm text-[var(--gray-text)]">
-          {mode === "login" ? (
+          {isLogin ? (
             <>
               No account?{" "}
               <button
                 type="button"
-                onClick={() => { setMode("register"); setError(""); }}
+                onClick={() => switchMode("register")}
                 className="font-semibold text-[var(--primary-blue)] hover:underline"
               >
                 Register
@@ -127,7 +127,7 @@ export const AuthGate = ({ defaultUsername }: AuthGateProps = {}) => {
               Already have an account?{" "}
               <button
                 type="button"
-                onClick={() => { setMode("login"); setError(""); }}
+                onClick={() => switchMode("login")}
                 className="font-semibold text-[var(--primary-blue)] hover:underline"
               >
                 Sign in

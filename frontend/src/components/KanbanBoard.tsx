@@ -1,6 +1,6 @@
 "use client";
 
-import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useDarkMode } from "@/lib/useDarkMode";
 import {
   pointerWithin,
@@ -39,6 +39,11 @@ import {
   type BoardMeta,
 } from "@/lib/api";
 
+const collisionDetectionStrategy: CollisionDetection = (args) => {
+  const pointer = pointerWithin(args);
+  return pointer.length > 0 ? pointer : rectIntersection(args);
+};
+
 type KanbanBoardProps = {
   username: string;
   onLogout?: () => void;
@@ -71,87 +76,59 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
   );
 
-  const cardsById = useMemo(() => board.cards, [board.cards]);
-
-  const collisionDetectionStrategy: CollisionDetection = (args) => {
-    const pointerCollisions = pointerWithin(args);
-    if (pointerCollisions.length > 0) return pointerCollisions;
-    return rectIntersection(args);
-  };
-
-  // Load board list and select first board on mount
   useEffect(() => {
-    const loadBoards = async () => {
-      setIsLoading(true);
-      setError("");
-      try {
-        const loaded = await listBoards(username);
+    setIsLoading(true);
+    setError("");
+    listBoards(username)
+      .then((loaded) => {
         setBoards(loaded);
-        if (loaded.length > 0) {
-          setActiveBoardId(loaded[0].id);
-        }
-      } catch {
+        if (loaded.length > 0) setActiveBoardId(loaded[0].id);
+      })
+      .catch(() => {
         setError("Failed to load boards");
         setIsLoading(false);
-      }
-    };
-    loadBoards();
+      });
   }, [username]);
 
-  // Load board data when activeBoardId changes
   useEffect(() => {
     if (activeBoardId === null) return;
-
     let isActive = true;
+    setIsLoading(true);
+    setError("");
+    hasLoadedRef.current = false;
 
-    const loadBoard = async () => {
-      setIsLoading(true);
-      setError("");
-      hasLoadedRef.current = false;
-      try {
-        const loadedBoard = await fetchBoard(username, activeBoardId);
-        if (isActive) {
-          hasLoadedRef.current = true;
-          skipNextSaveRef.current = true;
-          setBoard(loadedBoard);
-          setChatMessages([]);
-        }
-      } catch {
+    fetchBoard(username, activeBoardId)
+      .then((loadedBoard) => {
+        if (!isActive) return;
+        hasLoadedRef.current = true;
+        skipNextSaveRef.current = true;
+        setBoard(loadedBoard);
+        setChatMessages([]);
+      })
+      .catch(() => {
         if (isActive) setError("Failed to load board");
-      } finally {
+      })
+      .finally(() => {
         if (isActive) setIsLoading(false);
-      }
-    };
+      });
 
-    loadBoard();
     return () => { isActive = false; };
   }, [username, activeBoardId]);
 
-  // Auto-save board on change
   useEffect(() => {
     if (!hasLoadedRef.current || activeBoardId === null) return;
-
     if (skipNextSaveRef.current) {
       skipNextSaveRef.current = false;
       return;
     }
-
-    const persist = async () => {
-      try {
-        await saveBoard(username, activeBoardId, board);
-      } catch {
-        setError("Failed to save board");
-      }
-    };
-
-    persist();
+    saveBoard(username, activeBoardId, board).catch(() => setError("Failed to save board"));
   }, [board, username, activeBoardId]);
 
-  const handleDragStart = (event: DragStartEvent) => {
+  function handleDragStart(event: DragStartEvent) {
     setActiveCardId(event.active.id as string);
-  };
+  }
 
-  const handleDragEnd = (event: DragEndEvent) => {
+  function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     setActiveCardId(null);
     if (!over || active.id === over.id) return;
@@ -159,76 +136,67 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
       ...prev,
       columns: moveCard(prev.columns, active.id as string, over.id as string),
     }));
-  };
+  }
 
-  const handleRenameColumn = (columnId: string, title: string) => {
+  function handleRenameColumn(columnId: string, title: string) {
     setBoard((prev) => ({
       ...prev,
-      columns: prev.columns.map((column) =>
-        column.id === columnId ? { ...column, title } : column
-      ),
+      columns: prev.columns.map((c) => (c.id === columnId ? { ...c, title } : c)),
     }));
-  };
+  }
 
-  const handleAddCard = (columnId: string, title: string, details: string) => {
+  function handleAddCard(columnId: string, title: string, details: string) {
     const id = createId("card");
     setBoard((prev) => ({
       ...prev,
-      cards: {
-        ...prev.cards,
-        [id]: { id, title, details: details || "No details yet." },
-      },
-      columns: prev.columns.map((column) =>
-        column.id === columnId
-          ? { ...column, cardIds: [...column.cardIds, id] }
-          : column
+      cards: { ...prev.cards, [id]: { id, title, details: details || "No details yet." } },
+      columns: prev.columns.map((c) =>
+        c.id === columnId ? { ...c, cardIds: [...c.cardIds, id] } : c
       ),
     }));
-  };
+  }
 
-  const handleDeleteCard = (columnId: string, cardId: string) => {
-    setBoard((prev) => ({
-      ...prev,
-      cards: Object.fromEntries(
-        Object.entries(prev.cards).filter(([id]) => id !== cardId)
-      ),
-      columns: prev.columns.map((column) =>
-        column.id === columnId
-          ? { ...column, cardIds: column.cardIds.filter((id) => id !== cardId) }
-          : column
-      ),
-    }));
-  };
+  function handleDeleteCard(columnId: string, cardId: string) {
+    setBoard((prev) => {
+      const cards = { ...prev.cards };
+      delete cards[cardId];
+      return {
+        cards,
+        columns: prev.columns.map((c) =>
+          c.id === columnId ? { ...c, cardIds: c.cardIds.filter((id) => id !== cardId) } : c
+        ),
+      };
+    });
+  }
 
-  const handleEditCard = (updated: Card) => {
+  function handleEditCard(updated: Card) {
     setBoard((prev) => updateCard(prev, updated));
-  };
+  }
 
-  const handleDeleteColumn = (columnId: string) => {
+  function handleDeleteColumn(columnId: string) {
     setBoard((prev) => deleteColumn(prev, columnId));
-  };
+  }
 
-  const handleAddColumn = (event: FormEvent<HTMLFormElement>) => {
+  function handleAddColumn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const name = newColumnName.trim() || "New Column";
-    setBoard((prev) => addColumn(prev, name));
+    setBoard((prev) => addColumn(prev, newColumnName.trim() || "New Column"));
     setNewColumnName("");
     setAddingColumn(false);
-  };
+  }
 
-  const handleChatSubmit = async (event: FormEvent<HTMLFormElement>) => {
+  async function handleChatSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmed = chatInput.trim();
     if (!trimmed || isChatLoading || activeBoardId === null) return;
 
-    const nextHistory: ChatMessage[] = [...chatMessages, { role: "user", content: trimmed }];
-    setChatMessages(nextHistory);
+    const historyBeforeSend = chatMessages;
+    setChatMessages([...historyBeforeSend, { role: "user", content: trimmed }]);
     setChatInput("");
     setChatError("");
     setIsChatLoading(true);
 
     try {
-      const response = await aiBoardChat(username, activeBoardId, trimmed, chatMessages);
+      const response = await aiBoardChat(username, activeBoardId, trimmed, historyBeforeSend);
       setChatMessages((prev) => [...prev, { role: "assistant", content: response.reply }]);
       if (response.board_updated) {
         skipNextSaveRef.current = true;
@@ -239,14 +207,13 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     } finally {
       setIsChatLoading(false);
     }
-  };
+  }
 
-  const handleCreateBoard = async (event: FormEvent<HTMLFormElement>) => {
+  async function handleCreateBoard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const name = newBoardName.trim() || "New Board";
     setBoardActionError("");
     try {
-      const created = await createBoard(username, name);
+      const created = await createBoard(username, newBoardName.trim() || "New Board");
       setBoards((prev) => [...prev, created]);
       setActiveBoardId(created.id);
       setNewBoardName("");
@@ -254,9 +221,9 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     } catch {
       setBoardActionError("Failed to create board");
     }
-  };
+  }
 
-  const handleDeleteBoard = async (boardId: number) => {
+  async function handleDeleteBoard(boardId: number) {
     setBoardActionError("");
     try {
       await deleteBoard(username, boardId);
@@ -268,14 +235,14 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     } catch (err) {
       setBoardActionError(err instanceof Error ? err.message : "Failed to delete board");
     }
-  };
+  }
 
-  const handleStartRename = (boardId: number, currentName: string) => {
+  function handleStartRename(boardId: number, currentName: string) {
     setRenamingId(boardId);
     setRenameValue(currentName);
-  };
+  }
 
-  const handleRenameBoard = async (boardId: number) => {
+  async function handleRenameBoard(boardId: number) {
     const name = renameValue.trim();
     if (!name) { setRenamingId(null); return; }
     setBoardActionError("");
@@ -287,14 +254,14 @@ export const KanbanBoard = ({ username, onLogout }: KanbanBoardProps) => {
     } finally {
       setRenamingId(null);
     }
-  };
+  }
 
   const { dark, toggle: toggleDark } = useDarkMode();
   const activeBoard = boards.find((b) => b.id === activeBoardId);
   const editingCardColumn = editingCard
     ? board.columns.find((c) => c.cardIds.includes(editingCard.id))
     : null;
-  const activeCard = activeCardId ? cardsById[activeCardId] : null;
+  const activeCard = activeCardId ? board.cards[activeCardId] : null;
 
   if (isLoading && boards.length === 0) {
     return (

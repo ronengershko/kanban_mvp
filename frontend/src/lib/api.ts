@@ -19,110 +19,80 @@ export type BoardMeta = {
   updated_at: string;
 };
 
-export const loginUser = async (username: string, password: string): Promise<void> => {
-  const response = await fetch("/api/auth/login", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
+async function request<T>(
+  url: string,
+  init: RequestInit | undefined,
+  fallbackError: string
+): Promise<T> {
+  const response = await fetch(url, init);
   if (!response.ok) {
     const data = (await response.json().catch(() => ({}))) as { detail?: string };
-    throw new Error(data.detail ?? "Login failed");
+    throw new Error(data.detail ?? fallbackError);
   }
-};
+  return (await response.json()) as T;
+}
 
-export const registerUser = async (username: string, password: string): Promise<void> => {
-  const response = await fetch("/api/auth/register", {
-    method: "POST",
+function jsonInit(method: string, body: unknown): RequestInit {
+  return {
+    method,
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!response.ok) {
-    const data = (await response.json().catch(() => ({}))) as { detail?: string };
-    throw new Error(data.detail ?? "Registration failed");
-  }
-};
+    body: JSON.stringify(body),
+  };
+}
 
-export const listBoards = async (username: string): Promise<BoardMeta[]> => {
-  const response = await fetch(`/api/boards/${encodeURIComponent(username)}`);
-  if (!response.ok) throw new Error("Failed to load boards");
-  return (await response.json()) as BoardMeta[];
-};
+function userUrl(username: string, suffix = ""): string {
+  return `/api/boards/${encodeURIComponent(username)}${suffix}`;
+}
 
-export const createBoard = async (username: string, name: string): Promise<BoardMeta> => {
-  const response = await fetch(`/api/boards/${encodeURIComponent(username)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
-  });
-  if (!response.ok) throw new Error("Failed to create board");
-  return (await response.json()) as BoardMeta;
-};
+function boardUrl(username: string, boardId: number): string {
+  return `/api/board/${encodeURIComponent(username)}/${boardId}`;
+}
 
-export const renameBoard = async (
-  username: string,
-  boardId: number,
-  name: string
-): Promise<BoardMeta> => {
-  const response = await fetch(
-    `/api/boards/${encodeURIComponent(username)}/${boardId}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }
+export function loginUser(username: string, password: string): Promise<unknown> {
+  return request("/api/auth/login", jsonInit("POST", { username, password }), "Login failed");
+}
+
+export function registerUser(username: string, password: string): Promise<unknown> {
+  return request("/api/auth/register", jsonInit("POST", { username, password }), "Registration failed");
+}
+
+export function listBoards(username: string): Promise<BoardMeta[]> {
+  return request<BoardMeta[]>(userUrl(username), undefined, "Failed to load boards");
+}
+
+export function createBoard(username: string, name: string): Promise<BoardMeta> {
+  return request<BoardMeta>(userUrl(username), jsonInit("POST", { name }), "Failed to create board");
+}
+
+export function renameBoard(username: string, boardId: number, name: string): Promise<BoardMeta> {
+  return request<BoardMeta>(
+    userUrl(username, `/${boardId}`),
+    jsonInit("PATCH", { name }),
+    "Failed to rename board"
   );
-  if (!response.ok) throw new Error("Failed to rename board");
-  return (await response.json()) as BoardMeta;
-};
+}
 
-export const deleteBoard = async (username: string, boardId: number): Promise<void> => {
-  const response = await fetch(
-    `/api/boards/${encodeURIComponent(username)}/${boardId}`,
-    { method: "DELETE" }
-  );
-  if (!response.ok) {
-    const data = (await response.json().catch(() => ({}))) as { detail?: string };
-    throw new Error(data.detail ?? "Failed to delete board");
-  }
-};
+export function deleteBoard(username: string, boardId: number): Promise<unknown> {
+  return request(userUrl(username, `/${boardId}`), { method: "DELETE" }, "Failed to delete board");
+}
 
-export const fetchBoard = async (username: string, boardId: number): Promise<BoardData> => {
-  const response = await fetch(
-    `/api/board/${encodeURIComponent(username)}/${boardId}`
-  );
-  if (!response.ok) throw new Error("Failed to load board");
-  return (await response.json()) as BoardData;
-};
+export function fetchBoard(username: string, boardId: number): Promise<BoardData> {
+  return request<BoardData>(boardUrl(username, boardId), undefined, "Failed to load board");
+}
 
-export const saveBoard = async (
-  username: string,
-  boardId: number,
-  board: BoardData
-): Promise<BoardData> => {
-  const response = await fetch(
-    `/api/board/${encodeURIComponent(username)}/${boardId}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(board),
-    }
-  );
-  if (!response.ok) throw new Error("Failed to save board");
-  return (await response.json()) as BoardData;
-};
+export function saveBoard(username: string, boardId: number, board: BoardData): Promise<BoardData> {
+  return request<BoardData>(boardUrl(username, boardId), jsonInit("PUT", board), "Failed to save board");
+}
 
-export const aiBoardChat = async (
+export function aiBoardChat(
   username: string,
   boardId: number,
   message: string,
   history: ChatMessage[]
-): Promise<AiBoardChatResponse> => {
-  const response = await fetch("/api/ai/board-chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, board_id: boardId, message, history }),
-  });
-  if (!response.ok) throw new Error("AI chat failed");
-  return (await response.json()) as AiBoardChatResponse;
-};
+): Promise<AiBoardChatResponse> {
+  return request<AiBoardChatResponse>(
+    "/api/ai/board-chat",
+    jsonInit("POST", { username, board_id: boardId, message, history }),
+    "AI chat failed"
+  );
+}

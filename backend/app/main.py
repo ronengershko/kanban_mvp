@@ -39,51 +39,17 @@ DEFAULT_BOARD: dict[str, Any] = {
         {"id": "col-done", "title": "Done", "cardIds": ["card-7", "card-8"]},
     ],
     "cards": {
-        "card-1": {
-            "id": "card-1",
-            "title": "Align roadmap themes",
-            "details": "Draft quarterly themes with impact statements and metrics.",
-        },
-        "card-2": {
-            "id": "card-2",
-            "title": "Gather customer signals",
-            "details": "Review support tags, sales notes, and churn feedback.",
-        },
-        "card-3": {
-            "id": "card-3",
-            "title": "Prototype analytics view",
-            "details": "Sketch initial dashboard layout and key drill-downs.",
-        },
-        "card-4": {
-            "id": "card-4",
-            "title": "Refine status language",
-            "details": "Standardize column labels and tone across the board.",
-        },
-        "card-5": {
-            "id": "card-5",
-            "title": "Design card layout",
-            "details": "Add hierarchy and spacing for scanning dense lists.",
-        },
-        "card-6": {
-            "id": "card-6",
-            "title": "QA micro-interactions",
-            "details": "Verify hover, focus, and loading states.",
-        },
-        "card-7": {
-            "id": "card-7",
-            "title": "Ship marketing page",
-            "details": "Final copy approved and asset pack delivered.",
-        },
-        "card-8": {
-            "id": "card-8",
-            "title": "Close onboarding sprint",
-            "details": "Document release notes and share internally.",
-        },
+        "card-1": {"id": "card-1", "title": "Align roadmap themes", "details": "Draft quarterly themes with impact statements and metrics."},
+        "card-2": {"id": "card-2", "title": "Gather customer signals", "details": "Review support tags, sales notes, and churn feedback."},
+        "card-3": {"id": "card-3", "title": "Prototype analytics view", "details": "Sketch initial dashboard layout and key drill-downs."},
+        "card-4": {"id": "card-4", "title": "Refine status language", "details": "Standardize column labels and tone across the board."},
+        "card-5": {"id": "card-5", "title": "Design card layout", "details": "Add hierarchy and spacing for scanning dense lists."},
+        "card-6": {"id": "card-6", "title": "QA micro-interactions", "details": "Verify hover, focus, and loading states."},
+        "card-7": {"id": "card-7", "title": "Ship marketing page", "details": "Final copy approved and asset pack delivered."},
+        "card-8": {"id": "card-8", "title": "Close onboarding sprint", "details": "Document release notes and share internally."},
     },
 }
 
-
-# ── Pydantic models ────────────────────────────────────────────────────────────
 
 class Card(BaseModel):
     id: str
@@ -149,18 +115,12 @@ class RenameBoardRequest(BaseModel):
     name: str
 
 
-# ── DB helpers ─────────────────────────────────────────────────────────────────
-
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-def get_db_path() -> Path:
-    return Path(app.state.db_path) if hasattr(app.state, "db_path") else DB_PATH
-
-
 def get_connection() -> sqlite3.Connection:
-    db_path = get_db_path()
+    db_path = Path(getattr(app.state, "db_path", DB_PATH))
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -195,18 +155,16 @@ def init_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_boards_user_id ON boards(user_id)")
 
-        # Migrate: add password_hash column if upgrading from old schema
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
-        if "password_hash" not in cols:
+        # Migrations for upgrades from older schemas
+        user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "password_hash" not in user_cols:
             conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
 
-        # Migrate: add name column to boards if upgrading from old schema
         board_cols = {row[1] for row in conn.execute("PRAGMA table_info(boards)")}
         if "name" not in board_cols:
             conn.execute("ALTER TABLE boards ADD COLUMN name TEXT NOT NULL DEFAULT 'My Board'")
 
-        # Seed the legacy single-board users: create a board row if they have none
-        # (handles upgrade from old UNIQUE user_id boards schema)
+        # Seed a default board for any user that has none (legacy upgrade path)
         conn.execute(
             """
             INSERT INTO boards (user_id, name, board_json)
@@ -228,16 +186,11 @@ def get_or_create_user_id(conn: sqlite3.Connection, username: str) -> int:
     return int(cursor.lastrowid)
 
 
-def get_user_id(conn: sqlite3.Connection, username: str) -> int | None:
-    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-    return int(row["id"]) if row else None
-
-
 def require_user(conn: sqlite3.Connection, username: str) -> int:
-    user_id = get_user_id(conn, username)
-    if user_id is None:
+    row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if row is None:
         raise HTTPException(status_code=404, detail="User not found")
-    return user_id
+    return int(row["id"])
 
 
 def require_board(conn: sqlite3.Connection, user_id: int, board_id: int) -> dict[str, Any]:
@@ -266,27 +219,17 @@ def get_or_create_default_board(conn: sqlite3.Connection, user_id: int) -> tuple
 
 def persist_board(conn: sqlite3.Connection, board_id: int, payload: dict[str, Any]) -> None:
     conn.execute(
-        """
-        UPDATE boards SET board_json = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-        """,
+        "UPDATE boards SET board_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (json.dumps(payload), board_id),
     )
 
-
-# ── OpenRouter ─────────────────────────────────────────────────────────────────
 
 def call_openrouter_messages(messages: list[dict[str, str]]) -> str:
     api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not api_key:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY is not set")
 
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": messages,
-    }
-    data = json.dumps(payload).encode("utf-8")
-
+    data = json.dumps({"model": OPENROUTER_MODEL, "messages": messages}).encode("utf-8")
     request = urllib.request.Request(
         OPENROUTER_URL,
         data=data,
@@ -313,18 +256,17 @@ def call_openrouter_messages(messages: list[dict[str, str]]) -> str:
     if not choices:
         raise HTTPException(status_code=502, detail="OpenRouter response missing choices")
 
-    message = choices[0].get("message", {})
-    content = message.get("content")
+    content = choices[0].get("message", {}).get("content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        text_parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text":
-                text_parts.append(str(part.get("text", "")))
-        combined = "".join(text_parts).strip()
-        if combined:
-            return combined
+        text = "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ).strip()
+        if text:
+            return text
     raise HTTPException(status_code=502, detail="OpenRouter response missing text content")
 
 
@@ -336,7 +278,7 @@ def extract_json_object(text: str) -> dict[str, Any]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
-        if lines and lines[0].startswith("```"):
+        if lines[0].startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
@@ -350,8 +292,6 @@ def extract_json_object(text: str) -> dict[str, Any]:
     return parsed
 
 
-# ── Auth endpoints ─────────────────────────────────────────────────────────────
-
 @app.post("/api/auth/register")
 def register(request: RegisterRequest) -> dict[str, str]:
     username = request.username.strip()
@@ -360,14 +300,13 @@ def register(request: RegisterRequest) -> dict[str, str]:
     if len(request.password) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
 
-    password_hash = _hash_password(request.password)
     with get_connection() as conn:
         existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
         if existing:
             raise HTTPException(status_code=409, detail="Username already taken")
         conn.execute(
             "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, password_hash),
+            (username, _hash_password(request.password)),
         )
         conn.commit()
 
@@ -382,7 +321,7 @@ def login(request: LoginRequest) -> dict[str, str]:
             (request.username,),
         ).fetchone()
 
-    # Legacy "user" account without password hash — allow login with password "password"
+    # Legacy "user" account predates password storage; allow the documented default
     if row and row["password_hash"] is None:
         if request.username == "user" and request.password == "password":
             return {"status": "ok", "username": request.username}
@@ -393,8 +332,6 @@ def login(request: LoginRequest) -> dict[str, str]:
 
     return {"status": "ok", "username": request.username}
 
-
-# ── Board list endpoints ───────────────────────────────────────────────────────
 
 @app.get("/api/boards/{username}", response_model=list[BoardMeta])
 def list_boards(username: str) -> list[BoardMeta]:
@@ -418,10 +355,9 @@ def create_board(username: str, request: CreateBoardRequest) -> BoardMeta:
             "INSERT INTO boards (user_id, name, board_json) VALUES (?, ?, ?)",
             (user_id, name, json.dumps(DEFAULT_BOARD)),
         )
-        board_id = int(cursor.lastrowid)
         conn.commit()
         row = conn.execute(
-            "SELECT id, name, updated_at FROM boards WHERE id = ?", (board_id,)
+            "SELECT id, name, updated_at FROM boards WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
     return BoardMeta(id=row["id"], name=row["name"], updated_at=row["updated_at"])
 
@@ -433,30 +369,26 @@ def rename_board(username: str, board_id: int, request: RenameBoardRequest) -> B
         raise HTTPException(status_code=400, detail="Board name is required")
     with get_connection() as conn:
         user_id = require_user(conn, username)
-        row = conn.execute(
-            "SELECT id FROM boards WHERE id = ? AND user_id = ?", (board_id, user_id)
-        ).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Board not found")
+        require_board(conn, user_id, board_id)
         conn.execute(
             "UPDATE boards SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             (name, board_id),
         )
         conn.commit()
-        updated = conn.execute(
+        row = conn.execute(
             "SELECT id, name, updated_at FROM boards WHERE id = ?", (board_id,)
         ).fetchone()
-    return BoardMeta(id=updated["id"], name=updated["name"], updated_at=updated["updated_at"])
+    return BoardMeta(id=row["id"], name=row["name"], updated_at=row["updated_at"])
 
 
 @app.delete("/api/boards/{username}/{board_id}")
 def delete_board(username: str, board_id: int) -> dict[str, str]:
     with get_connection() as conn:
         user_id = require_user(conn, username)
-        row = conn.execute(
-            "SELECT id FROM boards WHERE user_id = ?", (user_id,)
-        ).fetchall()
-        if len(row) <= 1:
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM boards WHERE user_id = ?", (user_id,)
+        ).fetchone()["n"]
+        if count <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete your only board")
         result = conn.execute(
             "DELETE FROM boards WHERE id = ? AND user_id = ?", (board_id, user_id)
@@ -466,8 +398,6 @@ def delete_board(username: str, board_id: int) -> dict[str, str]:
         conn.commit()
     return {"status": "ok"}
 
-
-# ── Per-board endpoints ────────────────────────────────────────────────────────
 
 @app.get("/api/board/{username}/{board_id}", response_model=BoardData)
 def read_board_by_id(username: str, board_id: int) -> BoardData:
@@ -479,16 +409,13 @@ def read_board_by_id(username: str, board_id: int) -> BoardData:
 
 @app.put("/api/board/{username}/{board_id}", response_model=BoardData)
 def update_board_by_id(username: str, board_id: int, board: BoardData) -> BoardData:
-    payload = board.model_dump()
     with get_connection() as conn:
         user_id = require_user(conn, username)
         require_board(conn, user_id, board_id)
-        persist_board(conn, board_id, payload)
+        persist_board(conn, board_id, board.model_dump())
         conn.commit()
     return board
 
-
-# ── Legacy single-board endpoints (backward-compat) ───────────────────────────
 
 @app.get("/api/board/{username}", response_model=BoardData)
 def read_board(username: str) -> BoardData:
@@ -501,16 +428,13 @@ def read_board(username: str) -> BoardData:
 
 @app.put("/api/board/{username}", response_model=BoardData)
 def update_board(username: str, board: BoardData) -> BoardData:
-    payload = board.model_dump()
     with get_connection() as conn:
         user_id = get_or_create_user_id(conn, username)
         board_id, _ = get_or_create_default_board(conn, user_id)
-        persist_board(conn, board_id, payload)
+        persist_board(conn, board_id, board.model_dump())
         conn.commit()
     return board
 
-
-# ── AI endpoints ───────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
@@ -519,12 +443,11 @@ def health() -> dict[str, str]:
 
 @app.post("/api/ai/test")
 def ai_test(request: AiTestRequest) -> dict[str, str]:
-    answer = call_openrouter(request.prompt)
     return {
         "status": "ok",
         "model": OPENROUTER_MODEL,
         "prompt": request.prompt,
-        "answer": answer,
+        "answer": call_openrouter(request.prompt),
     }
 
 
@@ -535,44 +458,38 @@ def ai_board_chat(request: AiBoardChatRequest) -> dict[str, Any]:
         board = require_board(conn, user_id, request.board_id)
         conn.commit()
 
-    board_json = json.dumps(board, ensure_ascii=True)
     system_prompt = (
         "You are a Kanban assistant. The current board JSON is below. "
         "Return ONLY JSON with this schema: "
         '{"reply":"string","board":null OR {"columns":[{"id":"string","title":"string","cardIds":["string"]}],"cards":{"any-id":{"id":"string","title":"string","details":"string"}}}}. '
-        f"Use board=null if no board changes are needed.\n\nCurrent board JSON:\n{board_json}"
+        f"Use board=null if no board changes are needed.\n\nCurrent board JSON:\n{json.dumps(board, ensure_ascii=True)}"
     )
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    for entry in request.history:
-        messages.append({"role": entry.role, "content": entry.content})
+    messages.extend({"role": m.role, "content": m.content} for m in request.history)
     messages.append({"role": "user", "content": request.message})
 
-    raw_output = call_openrouter_messages(messages)
-    parsed = extract_json_object(raw_output)
+    parsed = extract_json_object(call_openrouter_messages(messages))
     try:
         structured = AiStructuredOutput.model_validate(parsed)
     except ValidationError as exc:
         raise HTTPException(status_code=502, detail=f"AI output schema invalid: {exc.errors()}") from exc
 
-    board_updated = structured.board is not None
     if structured.board is not None:
-        result_board_model = structured.board
+        result_board = structured.board
         with get_connection() as conn:
-            persist_board(conn, request.board_id, result_board_model.model_dump())
+            persist_board(conn, request.board_id, result_board.model_dump())
             conn.commit()
     else:
-        result_board_model = BoardData.model_validate(board)
+        result_board = BoardData.model_validate(board)
 
     return {
         "status": "ok",
         "model": OPENROUTER_MODEL,
         "reply": structured.reply,
-        "board_updated": board_updated,
-        "board": result_board_model.model_dump(),
+        "board_updated": structured.board is not None,
+        "board": result_board.model_dump(),
     }
 
-
-# ── Static frontend ────────────────────────────────────────────────────────────
 
 docker_static_dir = Path("/app/frontend-out")
 local_static_dir = Path(__file__).resolve().parents[2] / "frontend" / "out"
